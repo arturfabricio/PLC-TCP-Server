@@ -1,0 +1,92 @@
+//timer(PT:=T#10S);
+TCP();
+RFID();
+timer();
+
+CASE iState OF
+	0: //Initialization
+	GVL.xQA1_RIGHT := TRUE;
+	GVL.xMB20 := TRUE;
+	RFID.ClearError();
+	TCP.Connect(sIP:='172.20.66.5', uiPort:=22000);
+	iState := 1;
+	
+	1: //wait for RIFD to clear
+	IF RFID.xReady THEN
+		RFID.Connect(usiNodeID := 32, usiNetworkId := 0, usiChannel :=1);
+		iState := 2;
+	END_IF
+		
+	2: //wait for carrier
+	IF GVL.xBG21 = TRUE THEN
+		GVL.xMB20 := FALSE;
+		GVL.xQA1_RIGHT := FALSE;
+		iState := 4;
+	END_IF
+
+	4: //Read the RFID data
+	IF RFID.xReady THEN
+	RFID.ReadTag(uiStartAddress := 0, uiDataLength := SIZEOF(rfidData), ADR(rfidData));
+	iState := 5;
+	END_IF
+
+	5:
+	IF RFID.xReady THEN
+	carrierID:=dc_ecp.SwapWORD(rfidData.uiCarrierID);
+	iState := 6;
+	END_IF
+	
+	6: //wait for RFID read.
+	IF RFID.xReady THEN
+		XML1 := WSTRING_TO_STRING("<?xml version='1.0' encoding='UTF-8'?><sensorreading><reading><carrierID>");
+		XML2 := UINT_TO_STRING(carrierID);
+		XML3 := WSTRING_TO_STRING("</carrierID><stationID>");
+		XML4 := UINT_TO_STRING(stationID);
+		XML5 := WSTRING_TO_STRING("</stationID></reading></sensorreading>");
+		IF carrierID > 9 THEN
+			det := 2;
+		ELSE
+			det := 1;
+		END_IF
+		FINALXML2 := CONCAT(CONCAT(CONCAT(CONCAT(XML1,XML2),XML3),XML4), XML5);
+		iState := 7;
+	END_IF		
+	
+	7: //Make sure carrier is at the stopper.
+	IF GVL.xBG21 = TRUE THEN
+		iState := 8;
+	END_IF
+	
+	8: //Send XML string to server for processing.
+	IF TCP.xConnected AND TCP.xReady THEN
+		TCP.Send(pToSend:=ADR(FINALXML2), uiSizeToSend:=135+det);
+		iState := 14;
+	END_IF
+	
+	
+	14: //Receive processing time from server
+	IF TCP.xReady THEN
+		TCP.Receive(pTOReceive:=ADR(dataIn), uiSizeToReceive:=SIZEOF(dataIn));
+		IF STRING_TO_TIME(dataIN) > T#100MS THEN
+			iState := 15;
+		END_IF
+	END_IF
+
+	 
+	15: // Activate the Timer here:
+	timer(IN:=TRUE, PT:= STRING_TO_TIME(dataIN));
+	istate := 16;
+	
+	16: //Wait for timer:
+	IF timer.Q THEN
+		timer(IN:=FALSE);
+		iState := 17;
+	END_IF
+	
+	17:
+		GVL.xQA1_RIGHT := TRUE;
+		GVL.xMB20 := TRUE;
+		dataIN := WSTRING_TO_STRING("T#0ms");
+		iState := 0;
+ 
+END_CASE
